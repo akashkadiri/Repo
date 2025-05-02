@@ -50,15 +50,9 @@ class GitComparisonTool:
     def run(self):
         """Run the complete comparison process and return results."""
         try:
-            # Create temporary directory
-            self.temp_dir = tempfile.mkdtemp(prefix="git-compare-")
-            logger.info(f"Created temporary directory: {self.temp_dir}")
-            
-            # Clone repository as bare repo (no working directory)
-            repo_path = self._clone_repository()
-            
-            # Get available branches
-            branches = self._get_branches(repo_path)
+            # Check if repo and branches exist before cloning
+            logger.info(f"Checking if repository and branches exist...")
+            branches = self._check_remote_branches()
             
             # Check if feature branch exists
             if self.feature_branch not in branches:
@@ -69,7 +63,12 @@ class GitComparisonTool:
             if not main_branch:
                 raise ValueError(f"Could not determine main branch. Available branches: {', '.join(branches)}")
             
-            logger.info(f"Comparing branches: {main_branch} and {self.feature_branch}")
+            logger.info(f"Branches verified. Proceeding with comparison: {main_branch} and {self.feature_branch}")
+            
+            # Create temporary directory and clone repository
+            self.temp_dir = tempfile.mkdtemp(prefix="git-compare-")
+            logger.info(f"Created temporary directory: {self.temp_dir}")
+            repo_path = self._clone_repository()
             
             # Compare branches
             return self._compare_branches(repo_path, main_branch, self.feature_branch)
@@ -117,27 +116,41 @@ class GitComparisonTool:
             process.kill()
             raise ValueError(f"Command timed out after {self.timeout} seconds")
     
+    def _check_remote_branches(self):
+        """Check if repository and branches exist without cloning."""
+        # Create a temporary directory for ls-remote
+        temp_check_dir = tempfile.mkdtemp(prefix="git-check-")
+        try:
+            # Use git ls-remote to check repository and list branches
+            branches_output = self._run_git_command(
+                ["git", "ls-remote", "--heads", self.repo_url],
+                cwd=temp_check_dir
+            )
+            
+            # Parse branch names from refs/heads/branch-name
+            branches = []
+            for line in branches_output.splitlines():
+                if not line.strip():
+                    continue
+                # Format: <commit-hash>\trefs/heads/<branch-name>
+                parts = line.split('\t')
+                if len(parts) == 2 and parts[1].startswith('refs/heads/'):
+                    branch_name = parts[1].replace('refs/heads/', '')
+                    branches.append(branch_name)
+            
+            logger.info(f"Available branches: {', '.join(branches)}")
+            return branches
+        finally:
+            # Clean up temporary directory
+            if os.path.exists(temp_check_dir):
+                shutil.rmtree(temp_check_dir)
+    
     def _clone_repository(self):
         """Clone the repository to temporary directory."""
         repo_path = os.path.join(self.temp_dir, "repo")
         self._run_git_command(["git", "clone", "--bare", self.repo_url, repo_path])
         logger.info(f"Successfully cloned repository")
         return repo_path
-    
-    def _get_branches(self, repo_path):
-        """Get list of available branches."""
-        self._run_git_command(["git", "fetch", "--all"], cwd=repo_path)
-        branch_output = self._run_git_command(["git", "branch", "-r"], cwd=repo_path)
-        
-        branches = []
-        for line in branch_output.splitlines():
-            line = line.strip()
-            if "->" not in line:  # Skip HEAD pointer
-                branch = line.split("/", 1)[1] if "/" in line else line
-                branches.append(branch)
-        
-        logger.info(f"Available branches: {', '.join(branches)}")
-        return branches
     
     def _compare_branches(self, repo_path, base_branch, compare_branch):
         """Compare two branches using Git's diff."""
